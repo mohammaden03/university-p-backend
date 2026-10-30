@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database Service
+  postgres:
+    image: postgres:16-alpine
+    container_name: manuscript-htr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: htr_user
+      POSTGRES_PASSWORD: htr_secret_password
+      POSTGRES_DB: manuscript_htr_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U htr_user -d manuscript_htr_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - htr-network
+
+  # NestJS Backend API Service
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: manuscript-htr-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: "postgresql://htr_user:htr_secret_password@postgres:5432/manuscript_htr_db?schema=public"
+      JWT_SECRET: "super-secret-jwt-signing-key-for-persian-arabic-htr-platform-min-32-chars"
+      JWT_ACCESS_EXPIRES_IN: "15m"
+      JWT_REFRESH_EXPIRES_IN: "7d"
+      AI_SERVICE_URL: "http://ai-service:8000"
+      STORAGE_ROOT: "/usr/src/app/storage/manuscripts"
+      MAX_UPLOAD_SIZE: 20971520
+      CORS_ORIGINS: "*"
+    volumes:
+      - manuscript-storage:/usr/src/app/storage/manuscripts
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - htr-network
+
+  # External Python HTR/OCR Microservice (Placeholder/Integration mock)
+  # When deployed together, this FastAPI container runs deep learning models.
+  ai-service:
+    image: python:3.11-slim
+    container_name: manuscript-htr-ai-service
+    restart: unless-stopped
+    command: >
+      sh -c "pip install fastapi uvicorn && python -c '
+      from fastapi import FastAPI, HTTPException
+      from pydantic import BaseModel
+      import uvicorn, time
+
+      app = FastAPI(title=\"HTR Python Service\")
+
+      @app.get(\"/health\")
+      def health():
+          return {\"status\": \"healthy\", \"version\": \"2.4.0\", \"gpuAvailable\": True, \"device\": \"cuda:0\", \"modelsLoaded\": [\"qajar-nastaliq-v2\", \"arabic-naskh-v1\"]}
+
+      @app.get(\"/v1/models\")
+      def get_models():
+          return {\"models\": [
+              {\"id\": \"qajar-nastaliq-v2\", \"name\": \"Qajar Nasta\\'liq CTC HTR\", \"version\": \"2.1.0\", \"languages\": [\"PERSIAN\"], \"supportedScripts\": [\"Nasta\\'liq\", \"Shekasteh\"], \"description\": \"ResNet-BiLSTM-CTC model fine-tuned on 19th century Iranian manuscripts\", \"architecture\": \"CRNN+CTC\", \"isDefault\": True},
+              {\"id\": \"arabic-naskh-v1\", \"name\": \"Classical Arabic Naskh OCR\", \"version\": \"1.4.2\", \"languages\": [\"ARABIC\"], \"supportedScripts\": [\"Naskh\", \"Thuluth\"], \"description\": \"Attention-based Seq2Seq Transformer for vocalized Quranic and liturgical manuscripts\", \"architecture\": \"TrOCR-Large\", \"isDefault\": False}
+          ]}
+
+      class RecognizeReq(BaseModel):
+          pageId: str
+          imageStorageKey: str
+          language: str
+          modelName: str = None
+          processingOptions: dict = None
+
+      @app.post(\"/v1/recognize\")
+      def recognize(req: RecognizeReq):
+          start = time.time()
+          return {
+              \"recognizedText\": \"بشنو این نکته که خود را ز غم آزاده کنی\\nخون خوری گر طلب روزی ننهاده کنی\",
+              \"language\": req.language,
+              \"modelName\": req.modelName or \"qajar-nastaliq-v2\",
+              \"modelVersion\": \"2.1.0\",
+              \"processingDurationMs\": int((time.time() - start + 0.35) * 1000),
+              \"confidence\": 0.968,
+              \"confidenceExplanation\": \"Mean CTC decoding probability across 2 segmented text line regions\",
+              \"lineRegions\": [
+                  {\"lineNumber\": 1, \"boundingBox\": {\"x\": 120, \"y\": 150, \"width\": 860, \"height\": 95}, \"text\": \"بشنو این نکته که خود را ز غم آزاده کنی\", \"confidence\": 0.974, \"readingOrder\": 1},
+                  {\"lineNumber\": 2, \"boundingBox\": {\"x\": 115, \"y\": 270, \"width\": 870, \"height\": 92}, \"text\": \"خون خوری گر طلب روزی ننهاده کنی\", \"confidence\": 0.962, \"readingOrder\": 2}
+              ],
+              \"warnings\": []
+          }
+
+      uvicorn.run(app, host=\"0.0.0.0\", port=8000)
+      '"
+    ports:
+      - "8000:8000"
+    networks:
+      - htr-network
+
+volumes:
+  postgres-data:
+    driver: local
+  manuscript-storage:
+    driver: local
+
+networks:
+  htr-network:
+    driver: bridge

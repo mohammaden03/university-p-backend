@@ -1,0 +1,6 @@
+{
+  "name": "Persian & Arabic Manuscript HTR/OCR Platform",
+  "description": "Intelligent HTR/OCR backend platform for Persian and Arabic historical manuscripts with Islamic calligraphy, full-text search, revision tracking, and dataset management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

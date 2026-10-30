@@ -1,0 +1,236 @@
+// Prisma Schema for Persian & Arabic Manuscript HTR/OCR Platform
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  RESEARCHER
+}
+
+enum Language {
+  PERSIAN
+  ARABIC
+  MIXED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum TranscriptionSource {
+  AI
+  HUMAN
+}
+
+enum DatasetSampleStatus {
+  DRAFT
+  REVIEWED
+  APPROVED
+}
+
+enum DatasetSplit {
+  TRAIN
+  VALIDATION
+  TEST
+  UNASSIGNED
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  fullName     String
+  role         Role      @default(RESEARCHER)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relationships
+  refreshTokens       RefreshToken[]
+  createdManuscripts  Manuscript[]     @relation("ManuscriptCreator")
+  processingJobs      ProcessingJob[]  @relation("JobRequester")
+  createdTranscripts  Transcription[]  @relation("TranscriptionCreator")
+  createdSamples      DatasetSample[]  @relation("SampleCreator")
+  reviewedSamples     DatasetSample[]  @relation("SampleReviewer")
+
+  @@index([email])
+  @@index([role])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+}
+
+model Manuscript {
+  id                String    @id @default(uuid())
+  title             String
+  author            String?
+  language          Language  @default(PERSIAN)
+  description       String?
+  repositoryName    String?
+  catalogIdentifier String?
+  historicalPeriod  String?
+  scriptType        String?
+  sourceReference   String?
+  createdById       String
+  isArchived        Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  createdBy User             @relation("ManuscriptCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  pages     ManuscriptPage[]
+
+  @@index([title])
+  @@index([language])
+  @@index([scriptType])
+  @@index([historicalPeriod])
+  @@index([catalogIdentifier])
+  @@index([isArchived])
+}
+
+model ManuscriptPage {
+  id               String   @id @default(uuid())
+  manuscriptId     String
+  pageNumber       Int
+  imageStorageKey  String   @unique
+  originalFilename String
+  mimeType         String
+  fileSize         Int
+  width            Int?
+  height           Int?
+  checksum         String?
+  isArchived       Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  manuscript     Manuscript      @relation(fields: [manuscriptId], references: [id], onDelete: Restrict)
+  processingJobs ProcessingJob[]
+  transcriptions Transcription[]
+  datasetSamples DatasetSample[]
+  lineRegions    LineRegion[]
+
+  @@unique([manuscriptId, pageNumber], name: "manuscript_page_unique")
+  @@index([manuscriptId])
+  @@index([pageNumber])
+  @@index([isArchived])
+}
+
+model ProcessingJob {
+  id                  String    @id @default(uuid())
+  pageId              String
+  requestedById       String
+  idempotencyKey      String?   @unique
+  status              JobStatus @default(PENDING)
+  language            Language  @default(PERSIAN)
+  modelName           String?
+  modelVersion        String?
+  processingOptions   Json?
+  errorCode           String?
+  errorMessage        String?
+  executionDurationMs Int?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  page          ManuscriptPage  @relation(fields: [pageId], references: [id], onDelete: Restrict)
+  requestedBy   User            @relation("JobRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  transcriptions Transcription[]
+
+  @@index([pageId])
+  @@index([requestedById])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Transcription {
+  id              String              @id @default(uuid())
+  pageId          String
+  processingJobId String?
+  text            String              @db.Text
+  normalizedText  String              @db.Text
+  source          TranscriptionSource @default(AI)
+  isCurrent       Boolean             @default(true)
+  createdById     String?
+  revisionNumber  Int
+  notes           String?
+  confidence      Float?
+  lineRegions     Json?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  page           ManuscriptPage  @relation(fields: [pageId], references: [id], onDelete: Restrict)
+  processingJob  ProcessingJob?  @relation(fields: [processingJobId], references: [id], onDelete: SetNull)
+  createdBy      User?           @relation("TranscriptionCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  datasetSamples DatasetSample[]
+  lineAnnotations LineRegion[]
+
+  @@index([pageId, isCurrent])
+  @@index([revisionNumber])
+  @@index([source])
+}
+
+model DatasetSample {
+  id              String              @id @default(uuid())
+  pageId          String
+  transcriptionId String?
+  status          DatasetSampleStatus @default(DRAFT)
+  split           DatasetSplit        @default(UNASSIGNED)
+  notes           String?
+  createdById     String
+  reviewedById    String?
+  reviewedAt      DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  page          ManuscriptPage @relation(fields: [pageId], references: [id], onDelete: Restrict)
+  transcription Transcription?  @relation(fields: [transcriptionId], references: [id], onDelete: SetNull)
+  createdBy     User           @relation("SampleCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  reviewedBy    User?          @relation("SampleReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([pageId])
+  @@index([status])
+  @@index([split])
+}
+
+model LineRegion {
+  id              String   @id @default(uuid())
+  pageId          String
+  transcriptionId String?
+  lineNumber      Int
+  boundingBox     Json     // { x: number, y: number, width: number, height: number }
+  text            String?  @db.Text
+  confidence      Float?
+  readingOrder    Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  page          ManuscriptPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  transcription Transcription?  @relation(fields: [transcriptionId], references: [id], onDelete: Cascade)
+
+  @@index([pageId])
+  @@index([transcriptionId])
+}
